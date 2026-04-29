@@ -1,0 +1,126 @@
+type BuildingType = 'house' | 'townhouse' | 'garage' | 'shop' | 'ramen' | 'convenience' | 'apartment' | 'station' | 'hospital' | 'tower';
+
+const W = 360;
+const H = 580;
+const MIN_X = -180;
+const MAX_X = 180;
+const MIN_Y = -290;
+const MAX_Y = 290;
+const BALL_R = 16;
+const HUMAN_W = 3;
+const HUMAN_H = 6;
+const GRAVITY = 0.22;
+const FLIPPER_W = 68;
+const INST_F = 10;
+
+const BUILDINGS: Record<BuildingType, { w: number; h: number; hp: number; score: number; color: [number, number, number] }> = {
+  house:       { w: 16, h: 20, hp: 1, score: 100,  color: [0.70, 0.50, 0.34] },
+  townhouse:   { w: 18, h: 24, hp: 1, score: 120,  color: [0.72, 0.55, 0.40] },
+  garage:      { w: 20, h: 14, hp: 1, score: 80,   color: [0.45, 0.45, 0.45] },
+  shop:        { w: 22, h: 25, hp: 1, score: 180,  color: [0.42, 0.62, 0.82] },
+  ramen:       { w: 16, h: 20, hp: 1, score: 160,  color: [0.84, 0.32, 0.22] },
+  convenience: { w: 24, h: 22, hp: 1, score: 350,  color: [0.30, 0.78, 0.55] },
+  apartment:   { w: 24, h: 40, hp: 2, score: 600,  color: [0.48, 0.58, 0.70] },
+  station:     { w: 50, h: 36, hp: 3, score: 2500, color: [0.88, 0.78, 0.48] },
+  hospital:    { w: 35, h: 50, hp: 3, score: 1800, color: [0.88, 0.90, 0.94] },
+  tower:       { w: 35, h: 70, hp: 3, score: 2500, color: [0.45, 0.70, 0.90] },
+};
+
+interface Building { type: BuildingType; x: number; y: number; w: number; h: number; hp: number; maxHp: number; score: number; target: boolean; alive: boolean; flash: number; color: [number, number, number]; }
+interface Human { x: number; y: number; vx: number; vy: number; alive: boolean; }
+interface Particle { x: number; y: number; vx: number; vy: number; life: number; r: number; g: number; b: number; }
+interface Ball { x: number; y: number; vx: number; vy: number; r: number; }
+
+const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
+const wrap = document.getElementById('wrap') as HTMLElement;
+const scoreEl = document.getElementById('score-display') as HTMLElement;
+const targetEl = document.getElementById('target-display') as HTMLElement;
+const destroyEl = document.getElementById('destroy-display') as HTMLElement;
+const fuelFill = document.getElementById('life-fill') as HTMLElement;
+const title = document.getElementById('title') as HTMLElement;
+const result = document.getElementById('result') as HTMLElement;
+
+function applyScale() {
+  wrap.style.transform = `scale(${Math.min(window.innerWidth / W, window.innerHeight / H)})`;
+}
+window.addEventListener('resize', applyScale);
+applyScale();
+
+const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'high-performance' });
+if (!gl) throw new Error('WebGL2 required');
+
+const VS = `#version 300 es
+precision highp float;
+in vec2 a_vert;
+in vec2 i_pos;
+in vec2 i_size;
+in vec4 i_color;
+in float i_rot;
+in float i_circle;
+uniform mat4 u_proj;
+out vec4 v_color;
+out vec2 v_uv;
+out float v_circle;
+void main(){
+  float c=cos(i_rot),s=sin(i_rot);
+  vec2 scaled=a_vert*i_size;
+  vec2 rotated=vec2(c*scaled.x-s*scaled.y,s*scaled.x+c*scaled.y);
+  gl_Position=u_proj*vec4(rotated+i_pos,0.0,1.0);
+  v_color=i_color; v_uv=a_vert; v_circle=i_circle;
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec4 v_color;
+in vec2 v_uv;
+in float v_circle;
+out vec4 outColor;
+void main(){
+  if(v_circle>0.5){float d=length(v_uv)*2.0;if(d>1.0)discard;float g=1.0-smoothstep(0.55,1.0,d);outColor=vec4(v_color.rgb+g*0.35,v_color.a);} else outColor=v_color;
+}`;
+const BGV = `#version 300 es
+in vec2 a_pos; out vec2 v_uv; void main(){gl_Position=vec4(a_pos,0.0,1.0);v_uv=a_pos*0.5+0.5;}`;
+const BGF = `#version 300 es
+precision mediump float; in vec2 v_uv; out vec4 outColor; void main(){outColor=vec4(mix(vec3(0.08,0.06,0.04),vec3(0.14,0.20,0.28),v_uv.y),1.0);}`;
+function shader(type: number, src: string) { const s = gl!.createShader(type)!; gl!.shaderSource(s, src); gl!.compileShader(s); if (!gl!.getShaderParameter(s, gl!.COMPILE_STATUS)) throw new Error(gl!.getShaderInfoLog(s) || 'shader error'); return s; }
+function program(v: string, f: string) { const p = gl!.createProgram()!; gl!.attachShader(p, shader(gl!.VERTEX_SHADER, v)); gl!.attachShader(p, shader(gl!.FRAGMENT_SHADER, f)); gl!.linkProgram(p); if (!gl!.getProgramParameter(p, gl!.LINK_STATUS)) throw new Error(gl!.getProgramInfoLog(p) || 'program error'); return p; }
+function ortho(l: number, r: number, b: number, t: number) { return new Float32Array([2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-1,0, -(r+l)/(r-l),-(t+b)/(t-b),0,1]); }
+
+const prog = program(VS, FS);
+const vao = gl.createVertexArray()!;
+gl.bindVertexArray(vao);
+const quad = new Float32Array([-0.5,-0.5,0.5,-0.5,-0.5,0.5,0.5,0.5]);
+const qbo = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, qbo); gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+let loc = gl.getAttribLocation(prog, 'a_vert'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+const ibo = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, ibo); gl.bufferData(gl.ARRAY_BUFFER, 60000 * INST_F * 4, gl.DYNAMIC_DRAW);
+const stride = INST_F * 4;
+function attr(name: string, size: number, off: number) { const l = gl!.getAttribLocation(prog, name); gl!.enableVertexAttribArray(l); gl!.vertexAttribPointer(l, size, gl!.FLOAT, false, stride, off * 4); gl!.vertexAttribDivisor(l, 1); }
+attr('i_pos', 2, 0); attr('i_size', 2, 2); attr('i_color', 4, 4); attr('i_rot', 1, 8); attr('i_circle', 1, 9);
+gl.bindVertexArray(null);
+const uProj = gl.getUniformLocation(prog, 'u_proj')!;
+
+const bgProg = program(BGV, BGF);
+const bgVao = gl.createVertexArray()!; gl.bindVertexArray(bgVao);
+const bgBuf = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+loc = gl.getAttribLocation(bgProg, 'a_pos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0); gl.bindVertexArray(null);
+gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.viewport(0, 0, W, H);
+const buf = new Float32Array(60000 * INST_F);
+function inst(n: number, x: number, y: number, w: number, h: number, r: number, g: number, b: number, a: number, rot = 0, circle = 0) { const o = n * INST_F; buf[o]=x; buf[o+1]=y; buf[o+2]=w; buf[o+3]=h; buf[o+4]=r; buf[o+5]=g; buf[o+6]=b; buf[o+7]=a; buf[o+8]=rot; buf[o+9]=circle; }
+
+let buildings: Building[] = [], humans: Human[] = [], particles: Particle[] = [], ball: Ball;
+let pressed = false, started = false, cleared = false, gameOver = false, fuel = 100, score = 0, totalBuildings = 0, lastTime = 0;
+const targetRequired = 3, destRequired = 0.8;
+function make(type: BuildingType, x: number, y: number, target = false): Building { const d = BUILDINGS[type]; return { type, x, y, w: d.w, h: d.h, hp: d.hp, maxHp: d.hp, score: d.score, color: d.color, target, alive: true, flash: 0 }; }
+function reset(){ buildings=[make('house',-142,-220),make('townhouse',-104,-216),make('garage',-66,-224),make('convenience',-12,-218,true),make('house',48,-220),make('house',104,-218),make('ramen',-132,-118),make('shop',-92,-114),make('shop',-50,-114),make('apartment',12,-128,true),make('townhouse',82,-116),make('garage',132,-124),make('house',-142,-22),make('house',-100,-20),make('ramen',-52,-24),make('station',26,-34,true),make('shop',106,-22),make('house',150,-20),make('hospital',-104,88,true),make('tower',-12,82,true),make('apartment',82,92),make('convenience',144,100)]; humans=[]; for(let i=0;i<60;i++) humans.push({x:-160+Math.random()*320,y:-175+Math.random()*310,vx:(Math.random()*2-1)*18,vy:(Math.random()*2-1)*18,alive:true}); particles=[]; ball={x:0,y:-210,vx:0,vy:8,r:BALL_R}; fuel=100; score=0; totalBuildings=buildings.length; cleared=false; gameOver=false; started=false; title.classList.add('show'); result.classList.remove('show'); hud(); }
+function targetDone(){ return buildings.filter(b=>b.target&&!b.alive).length; }
+function dest(){ return (totalBuildings-buildings.filter(b=>b.alive).length)/totalBuildings; }
+function hud(){ scoreEl.textContent=`SCORE ${score.toLocaleString()}`; targetEl.textContent=`TARGET ${targetDone()}/${targetRequired}`; destroyEl.textContent=`DEST ${Math.floor(dest()*100)}%`; fuelFill.style.width=`${Math.max(0,Math.min(100,fuel))}%`; }
+function hit(cx:number,cy:number,r:number,b:Building){ const nx=Math.max(b.x-b.w/2,Math.min(cx,b.x+b.w/2)), ny=Math.max(b.y,Math.min(cy,b.y+b.h)); const dx=cx-nx, dy=cy-ny; return dx*dx+dy*dy<=r*r; }
+function damage(b:Building){ b.hp--; b.flash=.08; ball.vx+=(ball.x-b.x)*.035; ball.vy*=-.72; if(b.hp<=0&&b.alive){ b.alive=false; score+=b.score*(b.target?3:1); fuel=Math.min(100,fuel+(b.target?18:6)); for(let i=0;i<24;i++) particles.push({x:b.x,y:b.y+b.h/2,vx:(Math.random()*2-1)*100,vy:(Math.random()*2-1)*100,life:.45+Math.random()*.25,r:b.color[0],g:b.color[1],b:b.color[2]}); } }
+function flipper(left:boolean){ const px=left?-86:86, py=-230, base=left?-.46:Math.PI+.46, angle=base+(pressed?(left?.9:-.9):0); return {px,py,x2:px+Math.cos(angle)*FLIPPER_W,y2:py+Math.sin(angle)*FLIPPER_W,left}; }
+function resolve(f:ReturnType<typeof flipper>){ const ax=f.px,ay=f.py,bx=f.x2,by=f.y2,dx=bx-ax,dy=by-ay; const t=Math.max(0,Math.min(1,((ball.x-ax)*dx+(ball.y-ay)*dy)/(dx*dx+dy*dy))); const x=ax+dx*t,y=ay+dy*t,ox=ball.x-x,oy=ball.y-y,d=Math.hypot(ox,oy); if(d<ball.r+4){ const nx=ox/(d||1),ny=oy/(d||1),p=pressed?11:4; ball.x=x+nx*(ball.r+4); ball.y=y+ny*(ball.r+4); ball.vx+=nx*p+(f.left?3:-3); ball.vy+=ny*p+(pressed?12:3); } }
+function update(dt:number){ if(!started||cleared||gameOver)return; fuel-=dt*3.2; if(fuel<=0){fuel=0;gameOver=true;result.textContent='GAME OVER\nTAP / CLICK TO RETRY';result.classList.add('show');hud();return} ball.vy-=GRAVITY*55*dt; ball.x+=ball.vx*60*dt; ball.y+=ball.vy*60*dt; ball.vx*=.994; ball.vy*=.994; if(ball.x<MIN_X+ball.r){ball.x=MIN_X+ball.r;ball.vx=Math.abs(ball.vx)*.72} if(ball.x>MAX_X-ball.r){ball.x=MAX_X-ball.r;ball.vx=-Math.abs(ball.vx)*.72} if(ball.y>MAX_Y-ball.r){ball.y=MAX_Y-ball.r;ball.vy=-Math.abs(ball.vy)*.72} if(ball.y<MIN_Y-34){ball.x=0;ball.y=-210;ball.vx=0;ball.vy=8;fuel=Math.max(0,fuel-12)} resolve(flipper(true)); resolve(flipper(false)); for(const b of buildings){if(b.flash>0)b.flash=Math.max(0,b.flash-dt); if(b.alive&&hit(ball.x,ball.y,ball.r,b))damage(b)} for(const h of humans){if(!h.alive)continue; h.x+=h.vx*dt; h.y+=h.vy*dt; if(h.x<-165||h.x>165)h.vx*=-1; if(h.y<-185||h.y>145)h.vy*=-1; const dx=h.x-ball.x,dy=h.y-ball.y; if(dx*dx+dy*dy<(ball.r+4)*(ball.r+4)){h.alive=false;score+=10;fuel=Math.min(100,fuel+2);particles.push({x:h.x,y:h.y,vx:0,vy:80,life:.25,r:1,g:.18,b:.12})}} for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;p.vy-=110*dt} particles=particles.filter(p=>p.life>0); if(targetDone()>=targetRequired&&dest()>=destRequired){cleared=true;score+=5000;result.textContent='STAGE CLEAR!\nTAP / CLICK TO RETRY';result.classList.add('show')} hud(); }
+function render(){ gl!.clearColor(.04,.035,.05,1); gl!.clear(gl!.COLOR_BUFFER_BIT); gl!.useProgram(bgProg); gl!.bindVertexArray(bgVao); gl!.drawArrays(gl!.TRIANGLE_STRIP,0,4); let n=0; for(const y of [-170,-70,30,140]){inst(n++,0,y,360,14,.20,.20,.20,1); for(let x=-160;x<=160;x+=42)inst(n++,x,y,18,2,.75,.72,.45,.75)} inst(n++,0,-260,360,60,.12,.20,.12,1); for(const b of buildings){ const a=b.alive?1:.22,c=b.flash>0?[1,1,1]:b.color; inst(n++,b.x,b.y+b.h/2,b.w,b.h,c[0],c[1],c[2],a); inst(n++,b.x,b.y+b.h-4,Math.max(4,b.w-6),3,b.target?1:.08,b.target?.82:.08,b.target?.12:.08,a); if(b.alive&&b.target){inst(n++,b.x,b.y-2,b.w+5,2,1,.82,.12,1);inst(n++,b.x,b.y+b.h+2,b.w+5,2,1,.82,.12,1)} if(b.alive&&b.maxHp>1)for(let i=0;i<b.hp;i++)inst(n++,b.x-b.w/2+5+i*5,b.y+b.h+7,3,3,1,.2,.15,1)} for(const h of humans)if(h.alive)inst(n++,h.x,h.y,HUMAN_W,HUMAN_H,1,.82,.52,1); for(const p of particles)inst(n++,p.x,p.y,4,4,p.r,p.g,p.b,Math.max(0,p.life*2)); for(const side of [true,false]){const f=flipper(side),cx=(f.px+f.x2)/2,cy=(f.py+f.y2)/2,rot=Math.atan2(f.y2-f.py,f.x2-f.px);inst(n++,cx,cy,FLIPPER_W,8,1,.82,.12,1,rot)} inst(n++,ball.x,ball.y,ball.r*2,ball.r*2,1,.22,.10,1,0,1); gl!.useProgram(prog); gl!.uniformMatrix4fv(uProj,false,ortho(MIN_X,MAX_X,MIN_Y,MAX_Y)); gl!.bindVertexArray(vao); gl!.bindBuffer(gl!.ARRAY_BUFFER,ibo); gl!.bufferSubData(gl!.ARRAY_BUFFER,0,buf,0,n*INST_F); gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP,0,4,n); }
+function loop(now:number){const dt=Math.min(.033,(now-lastTime)/1000||0);lastTime=now;update(dt);render();requestAnimationFrame(loop)}
+function start(){if(!started||cleared||gameOver){reset();started=true;title.classList.remove('show');result.classList.remove('show')}pressed=true}
+addEventListener('mousedown',start);addEventListener('mouseup',()=>pressed=false);addEventListener('touchstart',e=>{e.preventDefault();start()},{passive:false});addEventListener('touchend',e=>{e.preventDefault();pressed=false},{passive:false});addEventListener('keydown',e=>{if(!e.repeat)start()});addEventListener('keyup',()=>pressed=false);
+reset();requestAnimationFrame(t=>{lastTime=t;requestAnimationFrame(loop)});
