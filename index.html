@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1" />
+  <title>Kaiju Pinball One Screen</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gameCanvas" width="360" height="580"></canvas>
+  <div id="overlay">
+    <div id="life-wrap"><div id="life-fill"></div></div>
+    <div id="score-display">SCORE 0</div>
+    <div id="target-display">TARGET 0/3</div>
+    <div id="destroy-display">DEST 0%</div>
+    <div id="title" class="show">KAIJU PINBALL\nONE SCREEN TEST\n\nTAP / CLICK TO START</div>
+    <div id="result"></div>
+    <div id="sub">Vite + TypeScript + WebGL2 / Target x3 + Destruction 80%</div>
+  </div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
