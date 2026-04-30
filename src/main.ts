@@ -1,35 +1,6 @@
-type BuildingType = 'house' | 'townhouse' | 'garage' | 'shop' | 'ramen' | 'convenience' | 'apartment' | 'station' | 'hospital' | 'tower';
-
-const W = 360;
-const H = 580;
-const MIN_X = -180;
-const MAX_X = 180;
-const MIN_Y = -290;
-const MAX_Y = 290;
-const BALL_R = 16;
-const HUMAN_W = 3;
-const HUMAN_H = 6;
-const GRAVITY = 0.22;
-const FLIPPER_W = 68;
-const INST_F = 10;
-
-const BUILDINGS: Record<BuildingType, { w: number; h: number; hp: number; score: number; color: [number, number, number] }> = {
-  house:       { w: 16, h: 20, hp: 1, score: 100,  color: [0.70, 0.50, 0.34] },
-  townhouse:   { w: 18, h: 24, hp: 1, score: 120,  color: [0.72, 0.55, 0.40] },
-  garage:      { w: 20, h: 14, hp: 1, score: 80,   color: [0.45, 0.45, 0.45] },
-  shop:        { w: 22, h: 25, hp: 1, score: 180,  color: [0.42, 0.62, 0.82] },
-  ramen:       { w: 16, h: 20, hp: 1, score: 160,  color: [0.84, 0.32, 0.22] },
-  convenience: { w: 24, h: 22, hp: 1, score: 350,  color: [0.30, 0.78, 0.55] },
-  apartment:   { w: 24, h: 40, hp: 2, score: 600,  color: [0.48, 0.58, 0.70] },
-  station:     { w: 50, h: 36, hp: 3, score: 2500, color: [0.88, 0.78, 0.48] },
-  hospital:    { w: 35, h: 50, hp: 3, score: 1800, color: [0.88, 0.90, 0.94] },
-  tower:       { w: 35, h: 70, hp: 3, score: 2500, color: [0.45, 0.70, 0.90] },
-};
-
-interface Building { type: BuildingType; x: number; y: number; w: number; h: number; hp: number; maxHp: number; score: number; target: boolean; alive: boolean; flash: number; color: [number, number, number]; }
-interface Human { x: number; y: number; vx: number; vy: number; alive: boolean; }
-interface Particle { x: number; y: number; vx: number; vy: number; life: number; r: number; g: number; b: number; }
-interface Ball { x: number; y: number; vx: number; vy: number; r: number; }
+import { CANVAS_H, CANVAS_W, PAL, WORLD_MAX_X, WORLD_MAX_Y, WORLD_MIN_X, WORLD_MIN_Y } from './constants';
+import { Renderer } from './renderer';
+import { BUILDING_H, BUILDING_HP, BUILDING_SCORE, BUILDING_W, drawBall, drawBuilding, drawFlipper, drawGround, drawHuman, drawParticle, drawRoad } from './entities';
 
 const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
 const wrap = document.getElementById('wrap') as HTMLElement;
@@ -40,87 +11,82 @@ const fuelFill = document.getElementById('life-fill') as HTMLElement;
 const title = document.getElementById('title') as HTMLElement;
 const result = document.getElementById('result') as HTMLElement;
 
-function applyScale() {
-  wrap.style.transform = `scale(${Math.min(window.innerWidth / W, window.innerHeight / H)})`;
-}
+function applyScale() { wrap.style.transform = `scale(${Math.min(window.innerWidth / CANVAS_W, window.innerHeight / CANVAS_H)})`; }
 window.addEventListener('resize', applyScale);
 applyScale();
 
-const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'high-performance' });
-if (!gl) throw new Error('WebGL2 required');
+const renderer = new Renderer(canvas);
+const buf = renderer.buf;
 
-const VS = `#version 300 es
-precision highp float;
-in vec2 a_vert;
-in vec2 i_pos;
-in vec2 i_size;
-in vec4 i_color;
-in float i_rot;
-in float i_circle;
-uniform mat4 u_proj;
-out vec4 v_color;
-out vec2 v_uv;
-out float v_circle;
-void main(){
-  float c=cos(i_rot),s=sin(i_rot);
-  vec2 scaled=a_vert*i_size;
-  vec2 rotated=vec2(c*scaled.x-s*scaled.y,s*scaled.x+c*scaled.y);
-  gl_Position=u_proj*vec4(rotated+i_pos,0.0,1.0);
-  v_color=i_color; v_uv=a_vert; v_circle=i_circle;
-}`;
-const FS = `#version 300 es
-precision highp float;
-in vec4 v_color;
-in vec2 v_uv;
-in float v_circle;
-out vec4 outColor;
-void main(){
-  if(v_circle>0.5){float d=length(v_uv)*2.0;if(d>1.0)discard;float g=1.0-smoothstep(0.55,1.0,d);outColor=vec4(v_color.rgb+g*0.35,v_color.a);} else outColor=v_color;
-}`;
-const BGV = `#version 300 es
-in vec2 a_pos; out vec2 v_uv; void main(){gl_Position=vec4(a_pos,0.0,1.0);v_uv=a_pos*0.5+0.5;}`;
-const BGF = `#version 300 es
-precision mediump float; in vec2 v_uv; out vec4 outColor; void main(){outColor=vec4(mix(vec3(0.08,0.06,0.04),vec3(0.14,0.20,0.28),v_uv.y),1.0);}`;
-function shader(type: number, src: string) { const s = gl!.createShader(type)!; gl!.shaderSource(s, src); gl!.compileShader(s); if (!gl!.getShaderParameter(s, gl!.COMPILE_STATUS)) throw new Error(gl!.getShaderInfoLog(s) || 'shader error'); return s; }
-function program(v: string, f: string) { const p = gl!.createProgram()!; gl!.attachShader(p, shader(gl!.VERTEX_SHADER, v)); gl!.attachShader(p, shader(gl!.FRAGMENT_SHADER, f)); gl!.linkProgram(p); if (!gl!.getProgramParameter(p, gl!.LINK_STATUS)) throw new Error(gl!.getProgramInfoLog(p) || 'program error'); return p; }
-function ortho(l: number, r: number, b: number, t: number) { return new Float32Array([2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-1,0, -(r+l)/(r-l),-(t+b)/(t-b),0,1]); }
+const MAX_BUILDINGS = 32;
+const MAX_HUMANS = 96;
+const MAX_PARTICLES = 512;
+const buildingType = new Int8Array(MAX_BUILDINGS);
+const buildingTarget = new Int8Array(MAX_BUILDINGS);
+const buildingAlive = new Int8Array(MAX_BUILDINGS);
+const buildingHp = new Int8Array(MAX_BUILDINGS);
+const buildingFlash = new Float32Array(MAX_BUILDINGS);
+const buildingX = new Float32Array(MAX_BUILDINGS);
+const buildingY = new Float32Array(MAX_BUILDINGS);
+let buildingCount = 0;
 
-const prog = program(VS, FS);
-const vao = gl.createVertexArray()!;
-gl.bindVertexArray(vao);
-const quad = new Float32Array([-0.5,-0.5,0.5,-0.5,-0.5,0.5,0.5,0.5]);
-const qbo = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, qbo); gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
-let loc = gl.getAttribLocation(prog, 'a_vert'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-const ibo = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, ibo); gl.bufferData(gl.ARRAY_BUFFER, 60000 * INST_F * 4, gl.DYNAMIC_DRAW);
-const stride = INST_F * 4;
-function attr(name: string, size: number, off: number) { const l = gl!.getAttribLocation(prog, name); gl!.enableVertexAttribArray(l); gl!.vertexAttribPointer(l, size, gl!.FLOAT, false, stride, off * 4); gl!.vertexAttribDivisor(l, 1); }
-attr('i_pos', 2, 0); attr('i_size', 2, 2); attr('i_color', 4, 4); attr('i_rot', 1, 8); attr('i_circle', 1, 9);
-gl.bindVertexArray(null);
-const uProj = gl.getUniformLocation(prog, 'u_proj')!;
+const humanAlive = new Int8Array(MAX_HUMANS);
+const humanX = new Float32Array(MAX_HUMANS);
+const humanY = new Float32Array(MAX_HUMANS);
+const humanVx = new Float32Array(MAX_HUMANS);
+const humanVy = new Float32Array(MAX_HUMANS);
+let humanCount = 0;
 
-const bgProg = program(BGV, BGF);
-const bgVao = gl.createVertexArray()!; gl.bindVertexArray(bgVao);
-const bgBuf = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
-loc = gl.getAttribLocation(bgProg, 'a_pos'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0); gl.bindVertexArray(null);
-gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.viewport(0, 0, W, H);
-const buf = new Float32Array(60000 * INST_F);
-function inst(n: number, x: number, y: number, w: number, h: number, r: number, g: number, b: number, a: number, rot = 0, circle = 0) { const o = n * INST_F; buf[o]=x; buf[o+1]=y; buf[o+2]=w; buf[o+3]=h; buf[o+4]=r; buf[o+5]=g; buf[o+6]=b; buf[o+7]=a; buf[o+8]=rot; buf[o+9]=circle; }
+const particleLife = new Float32Array(MAX_PARTICLES);
+const particleX = new Float32Array(MAX_PARTICLES);
+const particleY = new Float32Array(MAX_PARTICLES);
+const particleVx = new Float32Array(MAX_PARTICLES);
+const particleVy = new Float32Array(MAX_PARTICLES);
+const particleR = new Float32Array(MAX_PARTICLES);
+const particleG = new Float32Array(MAX_PARTICLES);
+const particleB = new Float32Array(MAX_PARTICLES);
 
-let buildings: Building[] = [], humans: Human[] = [], particles: Particle[] = [], ball: Ball;
-let pressed = false, started = false, cleared = false, gameOver = false, fuel = 100, score = 0, totalBuildings = 0, lastTime = 0;
-const targetRequired = 3, destRequired = 0.8;
-function make(type: BuildingType, x: number, y: number, target = false): Building { const d = BUILDINGS[type]; return { type, x, y, w: d.w, h: d.h, hp: d.hp, maxHp: d.hp, score: d.score, color: d.color, target, alive: true, flash: 0 }; }
-function reset(){ buildings=[make('house',-142,-220),make('townhouse',-104,-216),make('garage',-66,-224),make('convenience',-12,-218,true),make('house',48,-220),make('house',104,-218),make('ramen',-132,-118),make('shop',-92,-114),make('shop',-50,-114),make('apartment',12,-128,true),make('townhouse',82,-116),make('garage',132,-124),make('house',-142,-22),make('house',-100,-20),make('ramen',-52,-24),make('station',26,-34,true),make('shop',106,-22),make('house',150,-20),make('hospital',-104,88,true),make('tower',-12,82,true),make('apartment',82,92),make('convenience',144,100)]; humans=[]; for(let i=0;i<60;i++) humans.push({x:-160+Math.random()*320,y:-175+Math.random()*310,vx:(Math.random()*2-1)*18,vy:(Math.random()*2-1)*18,alive:true}); particles=[]; ball={x:0,y:-210,vx:0,vy:8,r:BALL_R}; fuel=100; score=0; totalBuildings=buildings.length; cleared=false; gameOver=false; started=false; title.classList.add('show'); result.classList.remove('show'); hud(); }
-function targetDone(){ return buildings.filter(b=>b.target&&!b.alive).length; }
-function dest(){ return (totalBuildings-buildings.filter(b=>b.alive).length)/totalBuildings; }
-function hud(){ scoreEl.textContent=`SCORE ${score.toLocaleString()}`; targetEl.textContent=`TARGET ${targetDone()}/${targetRequired}`; destroyEl.textContent=`DEST ${Math.floor(dest()*100)}%`; fuelFill.style.width=`${Math.max(0,Math.min(100,fuel))}%`; }
-function hit(cx:number,cy:number,r:number,b:Building){ const nx=Math.max(b.x-b.w/2,Math.min(cx,b.x+b.w/2)), ny=Math.max(b.y,Math.min(cy,b.y+b.h)); const dx=cx-nx, dy=cy-ny; return dx*dx+dy*dy<=r*r; }
-function damage(b:Building){ b.hp--; b.flash=.08; ball.vx+=(ball.x-b.x)*.035; ball.vy*=-.72; if(b.hp<=0&&b.alive){ b.alive=false; score+=b.score*(b.target?3:1); fuel=Math.min(100,fuel+(b.target?18:6)); for(let i=0;i<24;i++) particles.push({x:b.x,y:b.y+b.h/2,vx:(Math.random()*2-1)*100,vy:(Math.random()*2-1)*100,life:.45+Math.random()*.25,r:b.color[0],g:b.color[1],b:b.color[2]}); } }
-function flipper(left:boolean){ const px=left?-86:86, py=-230, base=left?-.46:Math.PI+.46, angle=base+(pressed?(left?.9:-.9):0); return {px,py,x2:px+Math.cos(angle)*FLIPPER_W,y2:py+Math.sin(angle)*FLIPPER_W,left}; }
-function resolve(f:ReturnType<typeof flipper>){ const ax=f.px,ay=f.py,bx=f.x2,by=f.y2,dx=bx-ax,dy=by-ay; const t=Math.max(0,Math.min(1,((ball.x-ax)*dx+(ball.y-ay)*dy)/(dx*dx+dy*dy))); const x=ax+dx*t,y=ay+dy*t,ox=ball.x-x,oy=ball.y-y,d=Math.hypot(ox,oy); if(d<ball.r+4){ const nx=ox/(d||1),ny=oy/(d||1),p=pressed?11:4; ball.x=x+nx*(ball.r+4); ball.y=y+ny*(ball.r+4); ball.vx+=nx*p+(f.left?3:-3); ball.vy+=ny*p+(pressed?12:3); } }
-function update(dt:number){ if(!started||cleared||gameOver)return; fuel-=dt*3.2; if(fuel<=0){fuel=0;gameOver=true;result.textContent='GAME OVER\nTAP / CLICK TO RETRY';result.classList.add('show');hud();return} ball.vy-=GRAVITY*55*dt; ball.x+=ball.vx*60*dt; ball.y+=ball.vy*60*dt; ball.vx*=.994; ball.vy*=.994; if(ball.x<MIN_X+ball.r){ball.x=MIN_X+ball.r;ball.vx=Math.abs(ball.vx)*.72} if(ball.x>MAX_X-ball.r){ball.x=MAX_X-ball.r;ball.vx=-Math.abs(ball.vx)*.72} if(ball.y>MAX_Y-ball.r){ball.y=MAX_Y-ball.r;ball.vy=-Math.abs(ball.vy)*.72} if(ball.y<MIN_Y-34){ball.x=0;ball.y=-210;ball.vx=0;ball.vy=8;fuel=Math.max(0,fuel-12)} resolve(flipper(true)); resolve(flipper(false)); for(const b of buildings){if(b.flash>0)b.flash=Math.max(0,b.flash-dt); if(b.alive&&hit(ball.x,ball.y,ball.r,b))damage(b)} for(const h of humans){if(!h.alive)continue; h.x+=h.vx*dt; h.y+=h.vy*dt; if(h.x<-165||h.x>165)h.vx*=-1; if(h.y<-185||h.y>145)h.vy*=-1; const dx=h.x-ball.x,dy=h.y-ball.y; if(dx*dx+dy*dy<(ball.r+4)*(ball.r+4)){h.alive=false;score+=10;fuel=Math.min(100,fuel+2);particles.push({x:h.x,y:h.y,vx:0,vy:80,life:.25,r:1,g:.18,b:.12})}} for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;p.vy-=110*dt} particles=particles.filter(p=>p.life>0); if(targetDone()>=targetRequired&&dest()>=destRequired){cleared=true;score+=5000;result.textContent='STAGE CLEAR!\nTAP / CLICK TO RETRY';result.classList.add('show')} hud(); }
-function render(){ gl!.clearColor(.04,.035,.05,1); gl!.clear(gl!.COLOR_BUFFER_BIT); gl!.useProgram(bgProg); gl!.bindVertexArray(bgVao); gl!.drawArrays(gl!.TRIANGLE_STRIP,0,4); let n=0; for(const y of [-170,-70,30,140]){inst(n++,0,y,360,14,.20,.20,.20,1); for(let x=-160;x<=160;x+=42)inst(n++,x,y,18,2,.75,.72,.45,.75)} inst(n++,0,-260,360,60,.12,.20,.12,1); for(const b of buildings){ const a=b.alive?1:.22,c=b.flash>0?[1,1,1]:b.color; inst(n++,b.x,b.y+b.h/2,b.w,b.h,c[0],c[1],c[2],a); inst(n++,b.x,b.y+b.h-4,Math.max(4,b.w-6),3,b.target?1:.08,b.target?.82:.08,b.target?.12:.08,a); if(b.alive&&b.target){inst(n++,b.x,b.y-2,b.w+5,2,1,.82,.12,1);inst(n++,b.x,b.y+b.h+2,b.w+5,2,1,.82,.12,1)} if(b.alive&&b.maxHp>1)for(let i=0;i<b.hp;i++)inst(n++,b.x-b.w/2+5+i*5,b.y+b.h+7,3,3,1,.2,.15,1)} for(const h of humans)if(h.alive)inst(n++,h.x,h.y,HUMAN_W,HUMAN_H,1,.82,.52,1); for(const p of particles)inst(n++,p.x,p.y,4,4,p.r,p.g,p.b,Math.max(0,p.life*2)); for(const side of [true,false]){const f=flipper(side),cx=(f.px+f.x2)/2,cy=(f.py+f.y2)/2,rot=Math.atan2(f.y2-f.py,f.x2-f.px);inst(n++,cx,cy,FLIPPER_W,8,1,.82,.12,1,rot)} inst(n++,ball.x,ball.y,ball.r*2,ball.r*2,1,.22,.10,1,0,1); gl!.useProgram(prog); gl!.uniformMatrix4fv(uProj,false,ortho(MIN_X,MAX_X,MIN_Y,MAX_Y)); gl!.bindVertexArray(vao); gl!.bindBuffer(gl!.ARRAY_BUFFER,ibo); gl!.bufferSubData(gl!.ARRAY_BUFFER,0,buf,0,n*INST_F); gl!.drawArraysInstanced(gl!.TRIANGLE_STRIP,0,4,n); }
-function loop(now:number){const dt=Math.min(.033,(now-lastTime)/1000||0);lastTime=now;update(dt);render();requestAnimationFrame(loop)}
-function start(){if(!started||cleared||gameOver){reset();started=true;title.classList.remove('show');result.classList.remove('show')}pressed=true}
-addEventListener('mousedown',start);addEventListener('mouseup',()=>pressed=false);addEventListener('touchstart',e=>{e.preventDefault();start()},{passive:false});addEventListener('touchend',e=>{e.preventDefault();pressed=false},{passive:false});addEventListener('keydown',e=>{if(!e.repeat)start()});addEventListener('keyup',()=>pressed=false);
-reset();requestAnimationFrame(t=>{lastTime=t;requestAnimationFrame(loop)});
+let ballX = 0, ballY = -210, ballVx = 0, ballVy = 8;
+let pressed = false, started = false, cleared = false, gameOver = false;
+let fuel = 100, score = 0, lastTime = 0;
+const targetRequired = 3;
+const destroyRequired = 0.8;
+
+function addBuilding(t: number, x: number, y: number, target: number) {
+  const i = buildingCount++;
+  buildingType[i] = t; buildingX[i] = x; buildingY[i] = y; buildingTarget[i] = target; buildingAlive[i] = 1; buildingHp[i] = BUILDING_HP[t]; buildingFlash[i] = 0;
+}
+function reset() {
+  buildingCount = 0;
+  addBuilding(0,-142,-220,0); addBuilding(1,-104,-216,0); addBuilding(2,-66,-224,0); addBuilding(5,-12,-218,1); addBuilding(0,48,-220,0); addBuilding(0,104,-218,0);
+  addBuilding(4,-132,-118,0); addBuilding(3,-92,-114,0); addBuilding(3,-50,-114,0); addBuilding(6,12,-128,1); addBuilding(1,82,-116,0); addBuilding(2,132,-124,0);
+  addBuilding(0,-142,-22,0); addBuilding(0,-100,-20,0); addBuilding(4,-52,-24,0); addBuilding(7,26,-34,1); addBuilding(3,106,-22,0); addBuilding(0,150,-20,0);
+  addBuilding(8,-104,88,1); addBuilding(9,-12,82,1); addBuilding(6,82,92,0); addBuilding(5,144,100,0);
+
+  humanCount = 60;
+  for (let i=0;i<humanCount;i++) { humanAlive[i]=1; humanX[i]=-160+Math.random()*320; humanY[i]=-175+Math.random()*310; humanVx[i]=(Math.random()*2-1)*18; humanVy[i]=(Math.random()*2-1)*18; }
+  for (let i=0;i<MAX_PARTICLES;i++) particleLife[i]=0;
+  ballX=0; ballY=-210; ballVx=0; ballVy=8; fuel=100; score=0; started=false; cleared=false; gameOver=false;
+  title.classList.add('show'); result.classList.remove('show'); updateHud();
+}
+function targetDone(){ let n=0; for(let i=0;i<buildingCount;i++) if(buildingTarget[i] && !buildingAlive[i]) n++; return n; }
+function destroyRatio(){ let live=0; for(let i=0;i<buildingCount;i++) if(buildingAlive[i]) live++; return (buildingCount-live)/buildingCount; }
+function updateHud(){ scoreEl.textContent=`SCORE ${score.toLocaleString()}`; targetEl.textContent=`TARGET ${targetDone()}/${targetRequired}`; destroyEl.textContent=`DEST ${Math.floor(destroyRatio()*100)}%`; fuelFill.style.width=`${Math.max(0,Math.min(100,fuel))}%`; }
+function spawnParticle(x:number,y:number,r:number,g:number,b:number){ for(let i=0;i<MAX_PARTICLES;i++){ if(particleLife[i]<=0){ particleLife[i]=0.45+Math.random()*0.25; particleX[i]=x; particleY[i]=y; particleVx[i]=(Math.random()*2-1)*100; particleVy[i]=(Math.random()*2-1)*100; particleR[i]=r; particleG[i]=g; particleB[i]=b; return; } } }
+function hitBuilding(i:number){ const t=buildingType[i], w=BUILDING_W[t], h=BUILDING_H[t]; const nx=Math.max(buildingX[i]-w/2,Math.min(ballX,buildingX[i]+w/2)); const ny=Math.max(buildingY[i],Math.min(ballY,buildingY[i]+h)); const dx=ballX-nx, dy=ballY-ny; return dx*dx+dy*dy<=16*16; }
+function damage(i:number){ const t=buildingType[i]; buildingHp[i]--; buildingFlash[i]=0.08; ballVx+=(ballX-buildingX[i])*0.035; ballVy*=-0.72; if(buildingHp[i]<=0 && buildingAlive[i]){ buildingAlive[i]=0; score+=BUILDING_SCORE[t]*(buildingTarget[i]?3:1); fuel=Math.min(100,fuel+(buildingTarget[i]?18:6)); for(let k=0;k<24;k++) spawnParticle(buildingX[i],buildingY[i]+BUILDING_H[t]/2,PAL.target[0],PAL.target[1],PAL.target[2]); } }
+function flipper(left:boolean){ const px=left?-86:86, py=-230, base=left?-0.46:Math.PI+0.46, a=base+(pressed?(left?0.9:-0.9):0); return {x1:px,y1:py,x2:px+Math.cos(a)*68,y2:py+Math.sin(a)*68,left}; }
+function resolveFlipper(left:boolean){ const f=flipper(left); const dx=f.x2-f.x1, dy=f.y2-f.y1; const tt=Math.max(0,Math.min(1,((ballX-f.x1)*dx+(ballY-f.y1)*dy)/(dx*dx+dy*dy))); const x=f.x1+dx*tt, y=f.y1+dy*tt; const ox=ballX-x, oy=ballY-y, d=Math.hypot(ox,oy); if(d<20){ const nx=ox/(d||1), ny=oy/(d||1), p=pressed?11:4; ballX=x+nx*20; ballY=y+ny*20; ballVx+=nx*p+(left?3:-3); ballVy+=ny*p+(pressed?12:3); } }
+function update(dt:number){ if(!started||cleared||gameOver)return; fuel-=dt*3.2; if(fuel<=0){ fuel=0; gameOver=true; result.textContent='GAME OVER\nTAP / CLICK TO RETRY'; result.classList.add('show'); updateHud(); return; }
+  ballVy-=0.22*55*dt; ballX+=ballVx*60*dt; ballY+=ballVy*60*dt; ballVx*=0.994; ballVy*=0.994;
+  if(ballX<WORLD_MIN_X+16){ballX=WORLD_MIN_X+16;ballVx=Math.abs(ballVx)*0.72} if(ballX>WORLD_MAX_X-16){ballX=WORLD_MAX_X-16;ballVx=-Math.abs(ballVx)*0.72} if(ballY>WORLD_MAX_Y-16){ballY=WORLD_MAX_Y-16;ballVy=-Math.abs(ballVy)*0.72} if(ballY<WORLD_MIN_Y-34){ballX=0;ballY=-210;ballVx=0;ballVy=8;fuel=Math.max(0,fuel-12)}
+  resolveFlipper(true); resolveFlipper(false);
+  for(let i=0;i<buildingCount;i++){ if(buildingFlash[i]>0) buildingFlash[i]=Math.max(0,buildingFlash[i]-dt); if(buildingAlive[i]&&hitBuilding(i)) damage(i); }
+  for(let i=0;i<humanCount;i++){ if(!humanAlive[i]) continue; humanX[i]+=humanVx[i]*dt; humanY[i]+=humanVy[i]*dt; if(humanX[i]<-165||humanX[i]>165) humanVx[i]*=-1; if(humanY[i]<-185||humanY[i]>145) humanVy[i]*=-1; const dx=humanX[i]-ballX, dy=humanY[i]-ballY; if(dx*dx+dy*dy<400){humanAlive[i]=0; score+=10; fuel=Math.min(100,fuel+2); spawnParticle(humanX[i],humanY[i],PAL.blood[0],PAL.blood[1],PAL.blood[2]);} }
+  for(let i=0;i<MAX_PARTICLES;i++){ if(particleLife[i]>0){ particleX[i]+=particleVx[i]*dt; particleY[i]+=particleVy[i]*dt; particleLife[i]-=dt; particleVy[i]-=110*dt; } }
+  if(targetDone()>=targetRequired&&destroyRatio()>=destroyRequired){ cleared=true; score+=5000; result.textContent='STAGE CLEAR!\nTAP / CLICK TO RETRY'; result.classList.add('show'); } updateHud(); }
+function render(){ const gl=renderer.gl; gl.clearColor(0.04,0.035,0.05,1); gl.clear(gl.COLOR_BUFFER_BIT); renderer.drawBackground(PAL.skyTop,PAL.skyBot); let idx=0; for(let r=0;r<4;r++) idx=drawRoad(buf,idx,[-170,-70,30,140][r]); idx=drawGround(buf,idx); for(let i=0;i<buildingCount;i++) idx=drawBuilding(buf,idx,buildingType[i],buildingX[i],buildingY[i],buildingHp[i],buildingAlive[i],buildingTarget[i],buildingFlash[i]); for(let i=0;i<humanCount;i++) if(humanAlive[i]) idx=drawHuman(buf,idx,humanX[i],humanY[i]); for(let i=0;i<MAX_PARTICLES;i++) if(particleLife[i]>0) idx=drawParticle(buf,idx,particleX[i],particleY[i],particleR[i],particleG[i],particleB[i],Math.max(0,particleLife[i]*2)); const lf=flipper(true), rf=flipper(false); idx=drawFlipper(buf,idx,lf.x1,lf.y1,lf.x2,lf.y2); idx=drawFlipper(buf,idx,rf.x1,rf.y1,rf.x2,rf.y2); idx=drawBall(buf,idx,ballX,ballY); renderer.draw(idx); }
+function loop(now:number){ const dt=Math.min(0.033,(now-lastTime)/1000||0); lastTime=now; update(dt); render(); requestAnimationFrame(loop); }
+function start(){ if(!started||cleared||gameOver){ reset(); started=true; title.classList.remove('show'); result.classList.remove('show'); } pressed=true; }
+addEventListener('mousedown',start); addEventListener('mouseup',()=>pressed=false); addEventListener('touchstart',e=>{e.preventDefault();start()},{passive:false}); addEventListener('touchend',e=>{e.preventDefault();pressed=false},{passive:false}); addEventListener('keydown',e=>{if(!e.repeat)start()}); addEventListener('keyup',()=>pressed=false);
+reset(); requestAnimationFrame(t=>{lastTime=t;requestAnimationFrame(loop)});
