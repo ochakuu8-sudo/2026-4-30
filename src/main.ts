@@ -42,6 +42,7 @@ const toppingOptions: { id: ToppingKind; label: string }[] = [
 ];
 
 type Step = 'tare' | 'soup' | 'noodle' | 'topping' | 'serve';
+type ChoiceItem = { label: string; action: () => void; primary?: boolean; disabled?: boolean };
 type Order = {
   soup: SoupKind;
   noodle: string;
@@ -108,7 +109,7 @@ function updateHud() {
   timeFill.style.width = `${Math.max(0, Math.min(100, timeLeft / 60 * 100))}%`;
 }
 
-function setButtons(items: { label: string; action: () => void; primary?: boolean; disabled?: boolean }[]) {
+function setButtons(items: ChoiceItem[]) {
   choices.innerHTML = '';
   for (const item of items) {
     const btn = document.createElement('button');
@@ -136,7 +137,7 @@ function refreshChoices() {
   } else if (step === 'noodle') {
     setButtons(noodleOptions.map(n => ({ label: `麺 ${n.label}`, action: () => { bowl.noodle = n.id; step = 'topping'; addSpark(n.id === order.noodle); refreshChoices(); } })));
   } else if (step === 'topping') {
-    const buttons = toppingOptions.map(t => ({
+    const buttons: ChoiceItem[] = toppingOptions.map(t => ({
       label: bowl.toppings.includes(t.id) ? `✓ ${t.label}` : t.label,
       disabled: bowl.toppings.includes(t.id),
       action: () => {
