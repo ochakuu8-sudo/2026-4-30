@@ -1,26 +1,473 @@
-import{CANVAS_H,CANVAS_W,WORLD_MIN_X,WORLD_MAX_X,WORLD_MIN_Y,WORLD_MAX_Y,PAL,BUILDING_W,BUILDING_H,BUILDING_HP,BUILDING_SCORE,BUILDING_COLORS}from'./constants.js';
-import{Renderer}from'./renderer.js';
-import{drawRoad,drawGround,drawBuilding,drawHuman,drawBall,drawFlipper,drawParticle}from'./entities.js';
-const canvas=document.getElementById('gameCanvas'),wrap=document.getElementById('wrap'),scoreEl=document.getElementById('score-display'),targetEl=document.getElementById('target-display'),destroyEl=document.getElementById('destroy-display'),fuelFill=document.getElementById('life-fill'),title=document.getElementById('title'),result=document.getElementById('result');
-function scale(){wrap.style.transform=`scale(${Math.min(innerWidth/CANVAS_W,innerHeight/CANVAS_H)})`}addEventListener('resize',scale);scale();
-let renderer;try{renderer=new Renderer(canvas)}catch(e){result.textContent='WEBGL2 REQUIRED';result.classList.add('show');throw e}
-const buf=renderer.buf,MAXB=32,MAXH=96,MAXP=512;
-const bt=new Int8Array(MAXB),btar=new Int8Array(MAXB),ba=new Int8Array(MAXB),bhp=new Int8Array(MAXB),bx=new Float32Array(MAXB),by=new Float32Array(MAXB),bf=new Float32Array(MAXB);let bc=0;
-const ha=new Int8Array(MAXH),hx=new Float32Array(MAXH),hy=new Float32Array(MAXH),hvx=new Float32Array(MAXH),hvy=new Float32Array(MAXH);let hc=0;
-const pl=new Float32Array(MAXP),px=new Float32Array(MAXP),py=new Float32Array(MAXP),pvx=new Float32Array(MAXP),pvy=new Float32Array(MAXP),pr=new Float32Array(MAXP),pg=new Float32Array(MAXP),pb=new Float32Array(MAXP);
-let ballX=0,ballY=-210,ballVx=0,ballVy=8,pressed=false,started=false,cleared=false,gameOver=false,fuel=100,score=0,last=0;
-function addB(t,x,y,target){const i=bc++;bt[i]=t;bx[i]=x;by[i]=y;btar[i]=target;ba[i]=1;bhp[i]=BUILDING_HP[t];bf[i]=0}
-function reset(){bc=0;addB(0,-142,-220,0);addB(1,-104,-216,0);addB(2,-66,-224,0);addB(5,-12,-218,1);addB(0,48,-220,0);addB(0,104,-218,0);addB(4,-132,-118,0);addB(3,-92,-114,0);addB(3,-50,-114,0);addB(6,12,-128,1);addB(1,82,-116,0);addB(2,132,-124,0);addB(0,-142,-22,0);addB(0,-100,-20,0);addB(4,-52,-24,0);addB(7,26,-34,1);addB(3,106,-22,0);addB(0,150,-20,0);addB(8,-104,88,1);addB(9,-12,82,1);addB(6,82,92,0);addB(5,144,100,0);hc=60;for(let i=0;i<hc;i++){ha[i]=1;hx[i]=-160+Math.random()*320;hy[i]=-175+Math.random()*310;hvx[i]=(Math.random()*2-1)*18;hvy[i]=(Math.random()*2-1)*18}for(let i=0;i<MAXP;i++)pl[i]=0;ballX=0;ballY=-210;ballVx=0;ballVy=8;fuel=100;score=0;started=false;cleared=false;gameOver=false;title.classList.add('show');result.classList.remove('show');hud()}
-function targetDone(){let n=0;for(let i=0;i<bc;i++)if(btar[i]&&!ba[i])n++;return n}
-function destroyRatio(){let live=0;for(let i=0;i<bc;i++)if(ba[i])live++;return(bc-live)/bc}
-function hud(){scoreEl.textContent=`SCORE ${score.toLocaleString()}`;targetEl.textContent=`TARGET ${targetDone()}/3`;destroyEl.textContent=`DEST ${Math.floor(destroyRatio()*100)}%`;fuelFill.style.width=`${Math.max(0,Math.min(100,fuel))}%`}
-function spawn(x,y,c){for(let i=0;i<MAXP;i++){if(pl[i]<=0){pl[i]=.45+Math.random()*.25;px[i]=x;py[i]=y;pvx[i]=(Math.random()*2-1)*100;pvy[i]=(Math.random()*2-1)*100;pr[i]=c[0];pg[i]=c[1];pb[i]=c[2];return}}}
-function hitB(i){const t=bt[i],w=BUILDING_W[t],h=BUILDING_H[t],nx=Math.max(bx[i]-w/2,Math.min(ballX,bx[i]+w/2)),ny=Math.max(by[i],Math.min(ballY,by[i]+h)),dx=ballX-nx,dy=ballY-ny;return dx*dx+dy*dy<=256}
-function damage(i){const t=bt[i];bhp[i]--;bf[i]=.08;ballVx+=(ballX-bx[i])*.035;ballVy*=-.72;if(bhp[i]<=0&&ba[i]){ba[i]=0;score+=BUILDING_SCORE[t]*(btar[i]?3:1);fuel=Math.min(100,fuel+(btar[i]?18:6));for(let k=0;k<24;k++)spawn(bx[i],by[i]+BUILDING_H[t]/2,BUILDING_COLORS[t])}}
-function flp(left){const x=left?-86:86,y=-230,base=left?-.46:Math.PI+.46,a=base+(pressed?(left?.9:-.9):0);return{x1:x,y1:y,x2:x+Math.cos(a)*68,y2:y+Math.sin(a)*68,left}}
-function resF(left){const f=flp(left),dx=f.x2-f.x1,dy=f.y2-f.y1,t=Math.max(0,Math.min(1,((ballX-f.x1)*dx+(ballY-f.y1)*dy)/(dx*dx+dy*dy))),x=f.x1+dx*t,y=f.y1+dy*t,ox=ballX-x,oy=ballY-y,d=Math.hypot(ox,oy);if(d<20){const nx=ox/(d||1),ny=oy/(d||1),p=pressed?11:4;ballX=x+nx*20;ballY=y+ny*20;ballVx+=nx*p+(left?3:-3);ballVy+=ny*p+(pressed?12:3)}}
-function update(dt){if(!started||cleared||gameOver)return;fuel-=dt*3.2;if(fuel<=0){fuel=0;gameOver=true;result.textContent='GAME OVER\nTAP / CLICK TO RETRY';result.classList.add('show');hud();return}ballVy-=.22*55*dt;ballX+=ballVx*60*dt;ballY+=ballVy*60*dt;ballVx*=.994;ballVy*=.994;if(ballX<WORLD_MIN_X+16){ballX=WORLD_MIN_X+16;ballVx=Math.abs(ballVx)*.72}if(ballX>WORLD_MAX_X-16){ballX=WORLD_MAX_X-16;ballVx=-Math.abs(ballVx)*.72}if(ballY>WORLD_MAX_Y-16){ballY=WORLD_MAX_Y-16;ballVy=-Math.abs(ballVy)*.72}if(ballY<WORLD_MIN_Y-34){ballX=0;ballY=-210;ballVx=0;ballVy=8;fuel=Math.max(0,fuel-12)}resF(true);resF(false);for(let i=0;i<bc;i++){if(bf[i]>0)bf[i]=Math.max(0,bf[i]-dt);if(ba[i]&&hitB(i))damage(i)}for(let i=0;i<hc;i++){if(!ha[i])continue;hx[i]+=hvx[i]*dt;hy[i]+=hvy[i]*dt;if(hx[i]<-165||hx[i]>165)hvx[i]*=-1;if(hy[i]<-185||hy[i]>145)hvy[i]*=-1;const dx=hx[i]-ballX,dy=hy[i]-ballY;if(dx*dx+dy*dy<400){ha[i]=0;score+=10;fuel=Math.min(100,fuel+2);spawn(hx[i],hy[i],PAL.blood)}}for(let i=0;i<MAXP;i++)if(pl[i]>0){px[i]+=pvx[i]*dt;py[i]+=pvy[i]*dt;pl[i]-=dt;pvy[i]-=110*dt}if(targetDone()>=3&&destroyRatio()>=.8){cleared=true;score+=5000;result.textContent='STAGE CLEAR!\nTAP / CLICK TO RETRY';result.classList.add('show')}hud()}
-function render(){const gl=renderer.gl;gl.clearColor(.04,.035,.05,1);gl.clear(gl.COLOR_BUFFER_BIT);renderer.drawBackground(PAL.skyTop,PAL.skyBot);let idx=0;idx=drawRoad(buf,idx,-170);idx=drawRoad(buf,idx,-70);idx=drawRoad(buf,idx,30);idx=drawRoad(buf,idx,140);idx=drawGround(buf,idx);for(let i=0;i<bc;i++)idx=drawBuilding(buf,idx,bt[i],bx[i],by[i],bhp[i],ba[i],btar[i],bf[i],BUILDING_W[bt[i]],BUILDING_H[bt[i]]);for(let i=0;i<hc;i++)if(ha[i])idx=drawHuman(buf,idx,hx[i],hy[i]);for(let i=0;i<MAXP;i++)if(pl[i]>0)idx=drawParticle(buf,idx,px[i],py[i],pr[i],pg[i],pb[i],Math.max(0,pl[i]*2));const lf=flp(true),rf=flp(false);idx=drawFlipper(buf,idx,lf.x1,lf.y1,lf.x2,lf.y2);idx=drawFlipper(buf,idx,rf.x1,rf.y1,rf.x2,rf.y2);idx=drawBall(buf,idx,ballX,ballY);renderer.draw(idx)}
-function loop(now){const dt=Math.min(.033,(now-last)/1000||0);last=now;update(dt);render();requestAnimationFrame(loop)}
-function start(){if(!started||cleared||gameOver){reset();started=true;title.classList.remove('show');result.classList.remove('show')}pressed=true}
-addEventListener('mousedown',start);addEventListener('mouseup',()=>pressed=false);addEventListener('touchstart',e=>{e.preventDefault();start()},{passive:false});addEventListener('touchend',e=>{e.preventDefault();pressed=false},{passive:false});addEventListener('keydown',e=>{if(!e.repeat)start()});addEventListener('keyup',()=>pressed=false);reset();requestAnimationFrame(t=>{last=t;requestAnimationFrame(loop)});
+const CANVAS_W = 360;
+const CANVAS_H = 580;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+if (!ctx) throw new Error('Canvas 2D context is not available');
+
+const wrap = document.getElementById('wrap');
+const scoreEl = document.getElementById('score-display');
+const orderEl = document.getElementById('target-display');
+const servedEl = document.getElementById('destroy-display');
+const timeFill = document.getElementById('life-fill');
+const title = document.getElementById('title');
+const result = document.getElementById('result');
+const choices = document.getElementById('choices');
+
+const soupOptions = [
+  { id: 'shoyu', label: '醤油', color: '#7a3517' },
+  { id: 'miso', label: '味噌', color: '#c96c22' },
+  { id: 'shio', label: '塩', color: '#f2c76b' },
+  { id: 'tonkotsu', label: '豚骨', color: '#ead49a' },
+];
+const noodleOptions = [
+  { id: 'kata', label: '硬め' },
+  { id: 'normal', label: '普通' },
+  { id: 'yawa', label: '柔め' },
+];
+const toppingOptions = [
+  { id: 'chashu', label: 'チャーシュー' },
+  { id: 'egg', label: '味玉' },
+  { id: 'nori', label: '海苔' },
+  { id: 'negi', label: 'ネギ' },
+  { id: 'menma', label: 'メンマ' },
+  { id: 'naruto', label: 'ナルト' },
+];
+
+let started = false;
+let gameOver = false;
+let score = 0;
+let served = 0;
+let streak = 0;
+let timeLeft = 60;
+let step = 'tare';
+let order = makeOrder();
+let bowl = emptyBowl();
+let lastTime = 0;
+let feedbackText = '';
+let feedbackTimer = 0;
+const sparks = [];
+
+function applyScale() {
+  wrap.style.transform = `scale(${Math.min(window.innerWidth / CANVAS_W, window.innerHeight / CANVAS_H)})`;
+}
+window.addEventListener('resize', applyScale);
+applyScale();
+
+function rand(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function makeOrder() {
+  const shuffled = [...toppingOptions].sort(() => Math.random() - 0.5);
+  const count = 2 + Math.floor(Math.random() * 2);
+  return {
+    soup: rand(soupOptions).id,
+    noodle: rand(noodleOptions).id,
+    toppings: shuffled.slice(0, count).map(t => t.id),
+  };
+}
+
+function emptyBowl() {
+  return { tare: false, soup: null, noodle: null, toppings: [] };
+}
+
+function labelSoup(id) {
+  return soupOptions.find(v => v.id === id)?.label ?? id;
+}
+function labelNoodle(id) {
+  return noodleOptions.find(v => v.id === id)?.label ?? id;
+}
+function labelTop(id) {
+  return toppingOptions.find(v => v.id === id)?.label ?? id;
+}
+function soupColor(id) {
+  return soupOptions.find(v => v.id === id)?.color ?? '#fff2c8';
+}
+
+function orderText() {
+  return `ORDER ${labelSoup(order.soup)} / 麺${labelNoodle(order.noodle)}\n具: ${order.toppings.map(labelTop).join('・')}`;
+}
+
+function updateHud() {
+  scoreEl.textContent = `SCORE ${score.toLocaleString()}  x${Math.max(1, streak)}`;
+  orderEl.textContent = started && !gameOver ? orderText() : 'ORDER';
+  servedEl.textContent = `SERVED ${served}`;
+  timeFill.style.width = `${Math.max(0, Math.min(100, (timeLeft / 60) * 100))}%`;
+}
+
+function setButtons(items) {
+  choices.innerHTML = '';
+  for (const item of items) {
+    const btn = document.createElement('button');
+    btn.className = `choice${item.primary ? ' primary' : ''}${item.disabled ? ' disabled' : ''}`;
+    btn.textContent = item.label;
+    btn.disabled = !!item.disabled;
+    btn.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!started || gameOver || item.disabled) return;
+      item.action();
+    });
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    choices.appendChild(btn);
+  }
+}
+
+function refreshChoices() {
+  if (!started || gameOver) {
+    choices.innerHTML = '';
+    return;
+  }
+
+  if (step === 'tare') {
+    setButtons([{ label: 'タレを入れる', primary: true, action: () => pickTare() }]);
+    return;
+  }
+  if (step === 'soup') {
+    setButtons(soupOptions.map(s => ({ label: `${s.label}スープ`, action: () => pickSoup(s.id) })));
+    return;
+  }
+  if (step === 'noodle') {
+    setButtons(noodleOptions.map(n => ({ label: `麺 ${n.label}`, action: () => pickNoodle(n.id) })));
+    return;
+  }
+  if (step === 'topping') {
+    const buttons = toppingOptions.map(t => ({
+      label: bowl.toppings.includes(t.id) ? `✓ ${t.label}` : t.label,
+      disabled: bowl.toppings.includes(t.id),
+      action: () => pickTopping(t.id),
+    }));
+    buttons.push({ label: '提供する', primary: true, disabled: bowl.toppings.length === 0, action: serve });
+    setButtons(buttons);
+    return;
+  }
+  setButtons([{ label: '提供する', primary: true, action: serve }]);
+}
+
+function pickTare() {
+  bowl.tare = true;
+  step = 'soup';
+  pop(true, 'タレOK');
+  refreshChoices();
+}
+function pickSoup(id) {
+  bowl.soup = id;
+  step = 'noodle';
+  pop(id === order.soup, id === order.soup ? 'スープOK' : '違うスープ');
+  refreshChoices();
+}
+function pickNoodle(id) {
+  bowl.noodle = id;
+  step = 'topping';
+  pop(id === order.noodle, id === order.noodle ? '麺OK' : '麺が違う');
+  refreshChoices();
+}
+function pickTopping(id) {
+  if (!bowl.toppings.includes(id)) bowl.toppings.push(id);
+  pop(order.toppings.includes(id), order.toppings.includes(id) ? '具材OK' : '余計な具材');
+  if (bowl.toppings.length >= order.toppings.length) step = 'serve';
+  refreshChoices();
+}
+
+function pop(good, text) {
+  feedbackText = text;
+  feedbackTimer = 0.75;
+  for (let i = 0; i < 10; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const speed = 30 + Math.random() * 90;
+    sparks.push({
+      x: 180 + (Math.random() - 0.5) * 120,
+      y: 220 + (Math.random() - 0.5) * 70,
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed - 30,
+      life: 0.55 + Math.random() * 0.35,
+      maxLife: 0.9,
+      good,
+    });
+  }
+}
+
+function scoreBowl() {
+  let matches = 0;
+  if (bowl.tare) matches++;
+  if (bowl.soup === order.soup) matches++;
+  if (bowl.noodle === order.noodle) matches++;
+  const wanted = new Set(order.toppings);
+  const got = new Set(bowl.toppings);
+  for (const t of wanted) if (got.has(t)) matches++;
+  for (const t of got) if (!wanted.has(t)) matches--;
+  const total = 3 + order.toppings.length;
+  return { matches, total, perfect: matches === total };
+}
+
+function serve() {
+  const judged = scoreBowl();
+  const gained = Math.max(0, judged.matches) * 120 + (judged.perfect ? 700 + streak * 80 : 0);
+  score += gained;
+  served++;
+  streak = judged.perfect ? streak + 1 : 0;
+  timeLeft = Math.min(60, timeLeft + (judged.perfect ? 5 : 1));
+  pop(judged.perfect, judged.perfect ? `完璧 +${gained}` : `${judged.matches}/${judged.total} +${gained}`);
+  order = makeOrder();
+  bowl = emptyBowl();
+  step = 'tare';
+  refreshChoices();
+  updateHud();
+}
+
+function reset() {
+  score = 0;
+  served = 0;
+  streak = 0;
+  timeLeft = 60;
+  step = 'tare';
+  order = makeOrder();
+  bowl = emptyBowl();
+  sparks.length = 0;
+  feedbackText = '';
+  feedbackTimer = 0;
+  gameOver = false;
+  started = true;
+  title.classList.remove('show');
+  result.classList.remove('show');
+  refreshChoices();
+  updateHud();
+}
+
+function finish() {
+  gameOver = true;
+  result.textContent = `営業終了！\nSCORE ${score.toLocaleString()}\n提供 ${served} 杯\n\nTAP / CLICK TO RETRY`;
+  result.classList.add('show');
+  refreshChoices();
+}
+
+function globalStart(e) {
+  if (e.target.closest('.choice')) return;
+  if (!started || gameOver) reset();
+}
+window.addEventListener('pointerdown', globalStart);
+window.addEventListener('mousedown', globalStart);
+window.addEventListener('touchstart', globalStart, { passive: true });
+
+function update(dt) {
+  if (started && !gameOver) {
+    timeLeft -= dt;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      updateHud();
+      finish();
+    }
+  }
+  if (feedbackTimer > 0) feedbackTimer = Math.max(0, feedbackTimer - dt);
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.life -= dt;
+    s.vy += 90 * dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+  updateHud();
+}
+
+function drawRoundedRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function fillRound(x, y, w, h, r, color) {
+  ctx.fillStyle = color;
+  drawRoundedRect(x, y, w, h, r);
+  ctx.fill();
+}
+
+function fillEllipse(x, y, rx, ry, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function strokeEllipse(x, y, rx, ry, color, width) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawKitchen(t) {
+  const g = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  g.addColorStop(0, '#5a2a12');
+  g.addColorStop(0.55, '#2a1208');
+  g.addColorStop(1, '#130806');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  fillRound(12, 86, 336, 74, 12, '#32170c');
+  fillRound(24, 96, 88, 48, 10, '#753818');
+  fillRound(136, 96, 88, 48, 10, '#753818');
+  fillRound(248, 96, 88, 48, 10, '#753818');
+  fillEllipse(68, 120, 28, 16, '#7a3517');
+  fillEllipse(180, 120, 28, 16, '#c96c22');
+  fillEllipse(292, 120, 28, 16, '#ead49a');
+
+  ctx.strokeStyle = 'rgba(255,230,180,0.38)';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 7; i++) {
+    const x = 42 + i * 45;
+    const y = 76 + Math.sin(t * 2 + i) * 4;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.bezierCurveTo(x - 10, y - 18, x + 13, y - 34, x + 1, y - 50);
+    ctx.stroke();
+  }
+
+  fillRound(0, 394, CANVAS_W, 186, 0, '#7a3a1b');
+  ctx.fillStyle = '#3b180b';
+  ctx.fillRect(0, 394, CANVAS_W, 10);
+  for (let x = -20; x < CANVAS_W; x += 58) {
+    ctx.fillStyle = 'rgba(255,225,160,0.08)';
+    ctx.fillRect(x, 410, 30, 160);
+  }
+}
+
+function drawBowl(t) {
+  fillEllipse(184, 336, 126, 45, 'rgba(0,0,0,0.32)');
+  fillEllipse(180, 310, 124, 70, '#f3ead2');
+  fillEllipse(180, 292, 106, 48, '#451b0d');
+  fillEllipse(180, 288, 92, 39, bowl.soup ? soupColor(bowl.soup) : '#fff0bd');
+  strokeEllipse(180, 292, 108, 50, '#fff6dc', 7);
+
+  if (bowl.noodle) drawNoodles(t);
+  for (const topping of bowl.toppings) drawTopping(topping, t);
+
+  ctx.fillStyle = '#f3ead2';
+  ctx.beginPath();
+  ctx.ellipse(180, 330, 122, 38, 0, 0, Math.PI);
+  ctx.lineTo(58, 330);
+  ctx.closePath();
+  ctx.fill();
+  strokeEllipse(180, 330, 122, 38, '#451b0d', 5);
+}
+
+function drawNoodles(t) {
+  ctx.strokeStyle = '#ffd56b';
+  ctx.lineWidth = 7;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 9; i++) {
+    const y = 275 + (i % 3) * 14;
+    const start = 112 + Math.floor(i / 3) * 25;
+    ctx.beginPath();
+    for (let k = 0; k < 5; k++) {
+      const x = start + k * 18;
+      const yy = y + Math.sin(t * 5 + i + k) * 4;
+      if (k === 0) ctx.moveTo(x, yy);
+      else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+}
+
+function drawTopping(kind, t) {
+  const bob = Math.sin(t * 3) * 2;
+  if (kind === 'chashu') {
+    fillEllipse(132, 274 + bob, 30, 20, '#b95836');
+    fillEllipse(132, 274 + bob, 19, 11, '#f0a06f');
+  } else if (kind === 'egg') {
+    fillEllipse(218, 274 + bob, 24, 17, '#fff0b8');
+    fillEllipse(222, 274 + bob, 10, 9, '#ffae1d');
+  } else if (kind === 'nori') {
+    ctx.save();
+    ctx.translate(244, 286 + bob);
+    ctx.rotate(-0.2);
+    fillRound(-15, -32, 30, 54, 4, '#0b2a13');
+    ctx.restore();
+  } else if (kind === 'negi') {
+    for (let i = 0; i < 12; i++) {
+      const x = 150 + (i % 4) * 12;
+      const y = 260 + Math.floor(i / 4) * 10 + bob;
+      ctx.strokeStyle = '#8ee85c';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  } else if (kind === 'menma') {
+    ctx.save();
+    ctx.translate(176, 264 + bob);
+    ctx.rotate(0.45);
+    for (let i = 0; i < 4; i++) fillRound(-21 + i * 12, -8, 8, 38, 3, '#bc7a32');
+    ctx.restore();
+  } else if (kind === 'naruto') {
+    fillEllipse(180, 264 + bob, 18, 18, '#fff2f5');
+    ctx.strokeStyle = '#ff4f78';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(180, 264 + bob, 9, 0.2, Math.PI * 1.55);
+    ctx.stroke();
+  }
+}
+
+function drawSparks() {
+  for (const s of sparks) {
+    const alpha = Math.max(0, s.life / s.maxLife);
+    ctx.globalAlpha = alpha;
+    fillEllipse(s.x, s.y, 5 + 10 * alpha, 5 + 10 * alpha, s.good ? '#72ff76' : '#ff4545');
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawFeedback() {
+  if (feedbackTimer <= 0 || !feedbackText) return;
+  const alpha = Math.min(1, feedbackTimer / 0.25);
+  ctx.globalAlpha = alpha;
+  fillRound(80, 178, 200, 42, 12, feedbackText.includes('違う') || feedbackText.includes('余計') ? '#ff4545' : '#72d94f');
+  ctx.fillStyle = '#190905';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(feedbackText, 180, 199);
+  ctx.globalAlpha = 1;
+}
+
+function drawStartBowl(t) {
+  const saved = bowl;
+  bowl = { tare: true, soup: 'tonkotsu', noodle: 'normal', toppings: ['chashu', 'egg', 'nori', 'negi'] };
+  drawBowl(t);
+  bowl = saved;
+}
+
+function render(now) {
+  const t = now / 1000;
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+  drawKitchen(t);
+  if (started) drawBowl(t);
+  else drawStartBowl(t);
+  drawSparks();
+  drawFeedback();
+}
+
+function loop(now) {
+  const dt = Math.min(0.033, (now - lastTime) / 1000 || 0);
+  lastTime = now;
+  update(dt);
+  render(now);
+  requestAnimationFrame(loop);
+}
+
+updateHud();
+requestAnimationFrame(now => {
+  lastTime = now;
+  requestAnimationFrame(loop);
+});
